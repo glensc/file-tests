@@ -39,6 +39,8 @@ def set_stored_metadata(filename, metadata):
 	f.close()
 
 def is_regression(m1, m2, exact = False, ratio = 0.7):
+	if m1['output'] == None or m2['output'] == None:
+		return True
 	if m1['output'] != m2['output']:
 		# previous file didn't detect it, so we hope new output is ok
 		if not m1['output'].endswith("data\n"):
@@ -70,6 +72,9 @@ def is_regression(m1, m2, exact = False, ratio = 0.7):
 	return False;
 
 def get_diff(m1, m2, exact = False, ratio = 0.7):
+	if m1['output'] == None or m2['output'] == None:
+		return "Output is None, was there error during File execution?"
+
 	text = ""
 	if m1['output'] != m2['output']:
 		# previous file didn't detect it, so we hope new output is ok
@@ -124,7 +129,7 @@ def get_stored_files(dir_name, subdir = True, *args):
 		dirfile = os.path.join(dir_name, file)
 		if os.path.isfile(dirfile):
 			if not args:
-				if not dirfile.endswith("pickle"):
+				if not dirfile.endswith("pickle") and not dirfile.endswith(".source.txt"):
 					fileList.append(dirfile)
 			else:
 				if os.path.splitext(dirfile)[1][1:] in args:

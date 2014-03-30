@@ -23,8 +23,24 @@ from subprocess import Popen, PIPE
 import pickle
 from progressbar import ProgressBar
 import hashlib
+import re
 
 COMPILED_SUFFIX = ".mgc"
+
+def print_file_info(file_binary='file'):
+	popen = Popen('which ' + file_binary, shell=True, bufsize=4096, stdout=PIPE)
+	pipe = popen.stdout
+	output_which = pipe.read().strip()
+	if popen.wait() != 0:
+		raise ValueError('could not query {0} for its version ({1})!'.format(file_binary, output_which))
+	popen = Popen(file_binary + " --version", shell=True, bufsize=4096, stdout=PIPE)
+	pipe = popen.stdout
+	output_ver = pipe.read().strip()
+	if popen.wait() not in (0,1):
+		raise ValueError('could not query {0} for its version ({1})!'.format(file_binary, output_ver))
+	print 'using file from', output_which
+	print 'version is', output_ver
+
 
 def mkdir_p(path):
 	try:
@@ -35,13 +51,19 @@ def mkdir_p(path):
 		else: raise
 
 def get_file_output(filename, file_binary = "file"):
-	pipe = Popen("file -b " + filename, shell=True, bufsize=4096, stdout=PIPE).stdout
+	popen = Popen("file -b " + filename, shell=True, bufsize=4096, stdout=PIPE)
+	pipe = popen.stdout
 	output = pipe.read()
+	if popen.wait() != 0:
+		return None
 	return output
 
 def get_file_mime(filename, file_binary = "file"):
-	pipe = Popen("file -ib " + filename, shell=True, bufsize=4096, stdout=PIPE).stdout
+	popen = Popen("file -ib " + filename, shell=True, bufsize=4096, stdout=PIPE)
+	pipe = popen.stdout
 	output = pipe.read()
+	if popen.wait() != 0:
+		return None
 	return output
 
 def get_simple_metadata(filename, file_binary = "file"):
@@ -50,14 +72,15 @@ def get_simple_metadata(filename, file_binary = "file"):
 	metadata['mime'] =  get_file_mime(filename, file_binary)
 	return metadata
 
-def split_patterns(magdir = "Magdir", file_name = "file"):
+def _split_patterns(pattern_id = 0, magdir = "Magdir", file_name = "file", only_name = False):
 	FILE_BINARY_HASH = hashlib.sha224(file_name).hexdigest()
 	outputdir = ".mgc_temp/" + FILE_BINARY_HASH + "/output"
 	mkdir_p(outputdir)
-	pattern_id = 0
 
 	files = os.listdir(magdir)
 	files.sort()
+	if len(files) == 0:
+		raise ValueError('no files found in Magdir {0}'.format( os.path.join(os.getcwd(), magdir) ))
 	prog = ProgressBar(0, len(files), 50, mode='fixed', char='#')
 	for f in files:
 		fd = open(os.path.join(magdir, f), "r")
@@ -76,7 +99,11 @@ def split_patterns(magdir = "Magdir", file_name = "file"):
 					fd_out = open(os.path.join(outputdir, str(pattern_id)), "w")
 					fd_out.write(buff)
 					fd_out.close()
+					in_pattern = False
 				buff = ""
+				if only_name:
+					if not re.match("^[0-9]*(\\s)*name", line.strip()):
+						continue
 				in_pattern = True
 				pattern_id += 1
 				buff += "#" + f +"\n"
@@ -86,19 +113,27 @@ def split_patterns(magdir = "Magdir", file_name = "file"):
 			elif line.strip().startswith(">") or line.strip().startswith("!"):
 				if in_pattern:
 					buff += line
-				else:
+				elif only_name == False:
 					print "broken pattern in file '" + f + "':" + str(i)
 		if in_pattern:
 			fd_out = open(os.path.join(outputdir, str(pattern_id)), "w")
 			fd_out.write(buff)
 			fd_out.close()
 		fd.close()
+	return pattern_id
+
+def split_patterns(magdir = "Magdir", file_name = "file"):
+	pattern_id = _split_patterns(0, magdir, file_name, True)
+	_split_patterns(pattern_id, magdir, file_name)
+
 	print ''
 
 def compile_patterns(file_name = "file"):
 	FILE_BINARY_HASH = hashlib.sha224(file_name).hexdigest()
 	magdir = ".mgc_temp/" + FILE_BINARY_HASH + "/output"
 	files = os.listdir(magdir)
+	if len(files) == 0:
+		raise ValueError('no files found in Magdir {0}'.format( os.path.join(os.getcwd(), magdir) ))
 	files.sort(key=lambda x: [int(x)])
 	mkdir_p(".mgc_temp")
 	mkdir_p(".mgc_temp/" + FILE_BINARY_HASH)
@@ -106,7 +141,8 @@ def compile_patterns(file_name = "file"):
 	prog = ProgressBar(0, len(files), 50, mode='fixed', char='#')
 
 	for i,f in enumerate(files):
-		if not os.path.exists(".mgc_temp/" + FILE_BINARY_HASH + "/.find-magic.tmp." + str(i) + ".mgc"):
+		out_file = ".mgc_temp/" + FILE_BINARY_HASH + "/.find-magic.tmp." + str(i) + ".mgc"
+		if not os.path.exists(out_file):
 			fd = open(os.path.join(magdir, f), "r")
 			buf = fd.read()
 			fd.close()
@@ -124,9 +160,14 @@ def compile_patterns(file_name = "file"):
 			#mv .find-magic.tmp." + str(i) + ".mgc .mgc_temp/;
 			
 			##os.system("cp .mgc_temp/" + FILE_BINARY_HASH + "/.find-magic.tmp .mgc_temp/" + FILE_BINARY_HASH + "/.find-magic.tmp." + str(i) + ";file -C -m .mgc_temp/" + FILE_BINARY_HASH + "/.find-magic.tmp." + str(i) + ";")
-			os.system("file -C -m .mgc_temp/" + FILE_BINARY_HASH + "/tmp")
+			cmd = "file -C -m .mgc_temp/" + FILE_BINARY_HASH + "/tmp"
+			ret_code = os.system(cmd)
+			if ret_code != 0:
+				raise ValueError('command {0} returned non-zero exit code {1}!'.format(cmd, ret_code))
 			if os.path.exists("tmp.mgc"):
-				os.system("mv tmp.mgc .mgc_temp/" + FILE_BINARY_HASH + "/.find-magic.tmp." + str(i) + ".mgc")
+				ret_code = os.system("mv tmp.mgc " + out_file)
+				if ret_code != 0:
+					raise ValueError('moving tmp.mgc to {0} failed with code {1}!'.format(out_file, ret_code))
 			#os.chdir("..")
 		prog.increment_amount()
 		print prog, "Compiling patterns", '\r',
@@ -134,6 +175,7 @@ def compile_patterns(file_name = "file"):
 	print ""
 
 def get_full_metadata(infile, file_name = "file", compiled = True):
+	""" file-output plus binary search to find the relevant line in magic file """
 	COMPILED_SUFFIX = ".mgc"
 	if not compiled:
 		COMPILED_SUFFIX = ""
@@ -154,9 +196,13 @@ def get_full_metadata(infile, file_name = "file", compiled = True):
 
 	while True:
 		f = files[i]
+		cmd = FILE_BINARY + " -b " + infile + " -m .mgc_temp/" + FILE_BINARY_HASH + "/.find-magic.tmp." + str(i) + COMPILED_SUFFIX
 		#print FILE_BINARY + " " + infile + " -m .mgc_temp/" + FILE_BINARY_HASH + "/.find-magic.tmp." + str(i) + COMPILED_SUFFIX
-		pipe = Popen(FILE_BINARY + " -b " + infile + " -m .mgc_temp/" + FILE_BINARY_HASH + "/.find-magic.tmp." + str(i) + COMPILED_SUFFIX, shell=True, bufsize=4096, stdout=PIPE).stdout
+		popen = Popen(cmd, shell=True, bufsize=4096, stdout=PIPE)
+		pipe = popen.stdout
 		last = pipe.read()
+		if popen.wait() != 0:
+			return {'output':None, 'mime':None, 'pattern':None, "suffix":None, "err":(cmd, last.strip())}
 		if b_out == None:
 			b_out = last
 		# a---------i---------b
@@ -182,10 +228,14 @@ def get_full_metadata(infile, file_name = "file", compiled = True):
 			buf = fd.read()
 			fd.close()
 			if os.path.exists(os.path.dirname(FILE_BINARY) + "/../magic/magic.mime.mgc"):
-				pipe = Popen(FILE_BINARY + " -bi " + infile + " -m " + os.path.dirname(FILE_BINARY) + "/../magic/magic", shell=True, bufsize=4096, stdout=PIPE).stdout
+				cmd = FILE_BINARY + " -bi " + infile + " -m " + os.path.dirname(FILE_BINARY) + "/../magic/magic"
 			else:
-				pipe = Popen(FILE_BINARY + " -bi " + infile + " -m .mgc_temp/" + FILE_BINARY_HASH + "/.find-magic.tmp." + str(i) + COMPILED_SUFFIX, shell=True, bufsize=4096, stdout=PIPE).stdout
+				cmd = FILE_BINARY + " -bi " + infile + " -m .mgc_temp/" + FILE_BINARY_HASH + "/.find-magic.tmp." + str(i) + COMPILED_SUFFIX
+			popen = Popen(cmd, shell=True, bufsize=4096, stdout=PIPE)
+			pipe = popen.stdout
 			mime = pipe.read()
+			if popen.wait() != 0:
+				return {'output':None, 'mime':None, 'pattern':None, "suffix":None, "err":(cmd, mime.strip())}
 			tlist.append(last)
 			index = infile.find('.')
 			if index == -1:
